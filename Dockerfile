@@ -6,7 +6,7 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_BREAK_SYSTEM_PACKAGES=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-pip \
+ && apt-get install -y --no-install-recommends python3 python3-pip procps \
  && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install --no-cache-dir \
@@ -17,6 +17,7 @@ RUN pip3 install --no-cache-dir \
 WORKDIR /app
 COPY app/ /app/
 COPY samples/ /samples/
+RUN chmod +x /app/demo/gdalwarp_demo.py
 
 ENV DATA_DIR=/data \
     SAMPLES_DIR=/data/samples \

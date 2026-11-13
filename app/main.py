@@ -13,7 +13,7 @@ from typing import List, Optional
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 
-from taskmanager import STATUS_DONE, TaskManager
+from taskmanager import DEMO_MODES, STATUS_DONE, TaskManager
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR.parent / "data"))
@@ -91,13 +91,19 @@ async def list_tasks():
 async def create_task(
     resolution: float = Form(...),
     plan: str = Form(...),
+    demo_mode: str = Form(default="off"),
     files: Optional[List[UploadFile]] = File(default=None),
 ):
     """plan 为 JSON 数组,按覆盖优先级从低到高排列:
     [{"type":"upload","index":0}, {"type":"sample","name":"dem_A_utm32n.tif"}]
+
+    demo_mode: off(真实 gdalwarp)/ hold(主进程先退,子进程持有日志管道)
+    / close(主进程先退,子进程关闭日志管道继续干活),仅影响 MOSAIC 阶段。
     """
     if not (0 < resolution <= 10000):
         raise HTTPException(400, "目标像元边长必须为大于 0 的数(米)")
+    if demo_mode not in DEMO_MODES:
+        raise HTTPException(400, f"非法 demo_mode: {demo_mode}")
     try:
         plan_items = json.loads(plan)
     except json.JSONDecodeError:
@@ -123,7 +129,7 @@ async def create_task(
         else:
             raise HTTPException(400, f"未知 plan 类型: {kind}")
 
-    task = manager.create([d for _, _, d in resolved], resolution)
+    task = manager.create([d for _, _, d in resolved], resolution, demo_mode=demo_mode)
     try:
         for pos, (kind, ref, display) in enumerate(resolved):
             dst = task.inputs_dir / f"{pos:02d}.tif"
@@ -145,7 +151,8 @@ async def create_task(
 
 @app.post("/api/tasks/{task_id}/cancel")
 async def cancel_task(task_id: str):
-    t = manager.cancel(task_id)
+    # 等待同一次收尾(进程组终止/回收、暂存清理)完成后才返回终态
+    t = await manager.cancel(task_id)
     if t is None:
         raise HTTPException(404, "任务不存在")
     return t.public()

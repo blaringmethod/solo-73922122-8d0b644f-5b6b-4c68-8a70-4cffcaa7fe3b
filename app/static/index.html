@@ -73,8 +73,21 @@
     <h2>3. 目标像元边长并提交</h2>
     <div class="row">
       <label>像元边长(米,&gt;0): <input type="number" id="res" value="2" min="0.000001" step="any"></label>
+      <label>MOSAIC 故障演示:
+        <select id="demoMode">
+          <option value="off">关闭(真实 gdalwarp)</option>
+          <option value="hold">主进程先退 · 子进程持有日志管道</option>
+          <option value="close">主进程先退 · 子进程关闭日志继续干活</option>
+        </select>
+      </label>
       <button class="primary" id="submitBtn" type="button">开始拼接</button>
       <span class="hint" id="submitMsg"></span>
+    </div>
+    <div class="hint" style="margin-top:8px">
+      演示模式只替换 MOSAIC 阶段的可执行程序:主进程工作约 8 秒后异常退出并留下同组子进程。
+      <b>hold</b> 下旧逻辑会因日志管道不 EOF 而永远显示运行;<b>close</b> 下旧逻辑会提前 EOF
+      误判失败并在子进程仍工作时删除暂存。修复后均由调度器主动终止整组、回收并清理后才报终态。
+      可在主进程存活期间点击取消,验证取消与主进程退出交错的收尾。
     </div>
   </section>
 
@@ -146,6 +159,7 @@ $('submitBtn').addEventListener('click', async ()=>{
   if(!plan.length){ msg.textContent='请先添加文件'; return; }
   const fd = new FormData();
   fd.append('resolution', res);
+  fd.append('demo_mode', $('demoMode').value);
   const planJson=[]; let ui=0;
   for(const e of plan){
     if(e.kind==='upload'){ fd.append('files', e.file, e.file.name); planJson.push({type:'upload', index:ui++}); }
@@ -163,16 +177,23 @@ $('submitBtn').addEventListener('click', async ()=>{
 });
 
 async function cancelTask(id){
-  await fetch(`/api/tasks/${id}/cancel`, {method:'POST'});
+  try{
+    const r = await fetch(`/api/tasks/${id}/cancel`, {method:'POST'});
+    if(r.ok){ const j = await r.json(); /* 取消端点返回时收尾已完成 */ void j; }
+  }catch(e){ /* 轮询仍会刷新状态 */ }
   loadTasks();
 }
 
 function taskHtml(t){
   const files = t.filenames.map(esc).join(' → ');
-  let body = `<div class="meta">文件(优先级升序): ${files}<br>像元边长: ${t.resolution} m · 创建于 ${new Date(t.created_at*1000).toLocaleTimeString()}</div>`;
+  const demoTag = t.demo_mode && t.demo_mode!=='off'
+    ? ` <span class="tag" style="background:#fff1e5;color:#bc4c00">演示:${esc(t.demo_mode)}</span>` : '';
+  let body = `<div class="meta">文件(优先级升序): ${files}<br>像元边长: ${t.resolution} m · 创建于 ${new Date(t.created_at*1000).toLocaleTimeString()}${demoTag}</div>`;
   if(t.error) body += `<div class="err">${esc(t.error)}</div>`;
-  if(t.log_tail && (t.status==='RUNNING'||t.status==='FAILED'))
+  if(t.log_tail && (t.status==='RUNNING'||t.status==='FAILED'||t.status==='CANCELLED'))
     body += `<details><summary>GDAL 输出</summary><pre>${esc(t.log_tail)}</pre></details>`;
+  if(t.cleanup && (t.status==='FAILED'||t.status==='CANCELLED'))
+    body += `<div class="meta">收尾确认:同组残留进程已终止回收 <b>${t.cleanup.group_pids_stopped}</b> 个,暂存目录已清理,并行名额已归还。</div>`;
   if(t.status==='DONE' && t.result){
     const r=t.result, e=r.extent.map(v=>v.toFixed(2)).join(', ');
     body += `<div class="result">尺寸: <b>${r.width} × ${r.height}</b> 像元 ·
